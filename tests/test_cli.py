@@ -12,6 +12,17 @@ def test_preflight_parser_accepts_a_host() -> None:
     assert arguments.sdb_timeout == 30.0
 
 
+def test_inventory_parser_is_read_only_and_needs_no_live_gate() -> None:
+    arguments = cli.build_parser().parse_args(
+        ["cifs", "inventory", "192.0.2.50"]
+    )
+
+    assert arguments.host == "192.0.2.50"
+    assert arguments.sdb_timeout == 30.0
+    assert not hasattr(arguments, "confirm")
+    assert not hasattr(arguments, "accept_saved_profile")
+
+
 def test_probe_parser_requires_both_live_gates() -> None:
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(
@@ -63,6 +74,7 @@ def test_command_parser_requires_a_shell_command() -> None:
 
     assert arguments.command == ["id", "uname -a"]
     assert arguments.agent_timeout == 30.0
+    assert arguments.accept_timeout == 600.0
 
 
 def test_global_output_option_is_accepted_before_the_subcommand() -> None:

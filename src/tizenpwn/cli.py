@@ -8,6 +8,7 @@ from pathlib import Path
 
 from . import __version__
 from .compatibility import TargetCompatibilityError
+from .persistence import inventory_target
 from .sdb import SdbError
 from .tu7000 import (
     CONFIRMATION,
@@ -69,6 +70,15 @@ def command_preflight(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def command_inventory(arguments: argparse.Namespace) -> int:
+    assessment = inventory_target(
+        arguments.host,
+        sdb_timeout=arguments.sdb_timeout,
+    )
+    emit(assessment.to_dict(), arguments.output)
+    return 0
+
+
 def command_probe(arguments: argparse.Namespace) -> int:
     evidence = execute_probe(
         arguments.host,
@@ -80,6 +90,7 @@ def command_probe(arguments: argparse.Namespace) -> int:
         rdp_port=arguments.rdp_port,
         smb_port=arguments.smb_port,
         image=arguments.image,
+        accept_timeout=arguments.accept_timeout,
     )
     emit(evidence, arguments.output)
     return 0
@@ -98,6 +109,7 @@ def command_command(arguments: argparse.Namespace) -> int:
         smb_port=arguments.smb_port,
         image=arguments.image,
         agent_timeout=arguments.agent_timeout,
+        accept_timeout=arguments.accept_timeout,
     )
     emit(evidence, arguments.output)
     return next(
@@ -129,6 +141,7 @@ def add_live_options(command: argparse.ArgumentParser) -> None:
     command.add_argument("--rdp-port", type=int, default=3389)
     command.add_argument("--smb-port", type=int, default=445)
     command.add_argument("--image")
+    command.add_argument("--accept-timeout", type=float, default=600.0)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -166,6 +179,14 @@ def build_parser() -> argparse.ArgumentParser:
     cifs_commands = cifs.add_subparsers(
         dest="cifs_command", required=True
     )
+    inventory = cifs_commands.add_parser(
+        "inventory",
+        help="read-only discovery for a persistent SSH service",
+    )
+    inventory.add_argument("host", help="TV IPv4 address")
+    inventory.add_argument("--sdb-timeout", type=float, default=30.0)
+    inventory.set_defaults(handler=command_inventory)
+
     probe = cifs_commands.add_parser(
         "probe",
         help="one bounded UID-0 identity proof",

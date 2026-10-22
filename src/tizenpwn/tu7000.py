@@ -1357,6 +1357,7 @@ def execute_probe(
     rdp_port: int = DEFAULT_RDP_PORT,
     smb_port: int = DEFAULT_SMB_PORT,
     image: str | None = None,
+    accept_timeout: float = DEFAULT_ACCEPT_TIMEOUT,
     prompt: ConsolePrompter | None = None,
     runner: Runner | None = None,
     client: SdbClient | None = None,
@@ -1380,7 +1381,7 @@ def execute_probe(
         raise CifsRouteError(
             "--bind-host must be one concrete address for the disposable lab"
         )
-    prompt = prompt or ConsolePrompter()
+    prompt = prompt or ConsolePrompter(accept_timeout)
     runner = runner or Runner()
     client = client or SdbClient(find_sdb(), tv_host, timeout=sdb_timeout)
     assessment = assess_target(tv_host, sdb_timeout=sdb_timeout, client=client)
@@ -1521,6 +1522,7 @@ def execute_command(
     smb_port: int = DEFAULT_SMB_PORT,
     image: str | None = None,
     agent_timeout: float = DEFAULT_AGENT_TIMEOUT,
+    accept_timeout: float = DEFAULT_ACCEPT_TIMEOUT,
     prompt: ConsolePrompter | None = None,
     runner: Runner | None = None,
     client: SdbClient | None = None,
@@ -1546,7 +1548,7 @@ def execute_command(
         raise CifsRouteError(
             "--bind-host must be one concrete address for the disposable lab"
         )
-    prompt = prompt or ConsolePrompter()
+    prompt = prompt or ConsolePrompter(accept_timeout)
     runner = runner or Runner()
     client = client or SdbClient(find_sdb(), tv_host, timeout=sdb_timeout)
     assessment = assess_target(tv_host, sdb_timeout=sdb_timeout, client=client)

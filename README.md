@@ -66,6 +66,24 @@ uv run tizenpwn preflight "$TV_IP"
 uv run tizenpwn -o json preflight "$TV_IP"
 ```
 
+## Read-only persistence inventory
+
+```console
+uv run tizenpwn cifs inventory "$TV_IP"
+uv run tizenpwn -o json cifs inventory "$TV_IP"
+```
+
+This is discovery for the proposed persistent SSH mode. It runs the same exact
+target assessment and then reports candidate SSH binaries, Python and `memfd`
+support, systemd/unit-directory state, root account and shell, PTY/devpts
+state, listeners, mount options, disk space, SDK-user writability, and any
+existing `tizenpwn-ssh` install.
+
+It does not start a listener, install a service, change UEP/SMACK, or create
+persistent state. Like the existing preflight, it may use the SDB capture path's
+temporary self-deleting script under `/home/owner/share/tmp/sdk_tools` when the
+probe is larger than the package-name injection limit.
+
 ## One bounded UID-0 proof
 
 This starts the disposable lab and waits for two manual gates. It is not a
@@ -145,6 +163,28 @@ Full evidence and the original plan:
 
 - [`docs/TU7000_2743.md`](docs/TU7000_2743.md)
 - [`docs/TU7000_2743_PLAN.md`](docs/TU7000_2743_PLAN.md)
+
+A proposed opt-in persistent root SSH service is described in
+[`docs/TU7000_PERSISTENCE_PLAN.md`](docs/TU7000_PERSISTENCE_PLAN.md). The
+current route still installs no persistent service.
+
+Host-side prototype, not wired into the CLI and not live-installed:
+
+- `payloads/tu7000/persistence`: Node-loaded `memfd` loader and probe.
+- `payloads/tu7000/sshd`: static Go SSH daemon with key-only auth, PTY, SFTP,
+  and SCP.
+
+The native memfd/loader path is blocked by UEP on this firmware. The current
+path is a pure-JS SSH daemon under the signed Node runtime; it is host-tested
+and reached a live listener once, but the live service is currently stopped.
+The live deploy, crash diagnosis, `cifs persist` installer, and boot
+persistence remain pending.
+
+- Current status and resume commands:
+  [`docs/TU7000_PERSISTENCE_STATUS.md`](docs/TU7000_PERSISTENCE_STATUS.md)
+- Plan: [`docs/TU7000_PERSISTENCE_PLAN.md`](docs/TU7000_PERSISTENCE_PLAN.md)
+- Payload notes: `payloads/tu7000/persistence/README.md` and
+  `payloads/tu7000/sshd-js/README.md`
 
 ## Scope
 
