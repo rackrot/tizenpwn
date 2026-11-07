@@ -98,3 +98,13 @@ def test_human_render_handles_nested_evidence() -> None:
     assert "authenticated: true" in lines
     assert "commands:" in lines
     assert any("command: id" in line for line in lines)
+
+
+def test_eu_preflight_is_explicit():
+    arguments = cli.build_parser().parse_args(
+        ["preflight", "192.0.2.50", "--experimental-eu"]
+    )
+    assert arguments.experimental_eu is True
+    assert cli.build_parser().parse_args(
+        ["preflight", "192.0.2.50"]
+    ).experimental_eu is False

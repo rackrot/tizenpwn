@@ -12,6 +12,7 @@ from .persistence import inventory_target
 from .sdb import SdbError
 from .tu7000 import (
     CONFIRMATION,
+    EU_CONFIRMATION,
     CifsRouteError,
     assess_target,
     execute_command,
@@ -62,6 +63,7 @@ def command_preflight(arguments: argparse.Namespace) -> int:
     assessment = assess_target(
         arguments.host,
         sdb_timeout=arguments.sdb_timeout,
+        experimental_eu=arguments.experimental_eu,
     )
     if arguments.output == "json":
         emit(assessment.to_dict(), arguments.output)
@@ -74,6 +76,7 @@ def command_inventory(arguments: argparse.Namespace) -> int:
     assessment = inventory_target(
         arguments.host,
         sdb_timeout=arguments.sdb_timeout,
+        experimental_eu=arguments.experimental_eu,
     )
     emit(assessment.to_dict(), arguments.output)
     return 0
@@ -85,6 +88,7 @@ def command_probe(arguments: argparse.Namespace) -> int:
         confirm=arguments.confirm,
         accept_saved_profile=arguments.accept_saved_profile,
         sdb_timeout=arguments.sdb_timeout,
+        experimental_eu=arguments.experimental_eu,
         callback_host=arguments.callback_host,
         bind_host=arguments.bind_host,
         rdp_port=arguments.rdp_port,
@@ -103,6 +107,7 @@ def command_command(arguments: argparse.Namespace) -> int:
         accept_saved_profile=arguments.accept_saved_profile,
         commands=tuple(arguments.command),
         sdb_timeout=arguments.sdb_timeout,
+        experimental_eu=arguments.experimental_eu,
         callback_host=arguments.callback_host,
         bind_host=arguments.bind_host,
         rdp_port=arguments.rdp_port,
@@ -110,6 +115,7 @@ def command_command(arguments: argparse.Namespace) -> int:
         image=arguments.image,
         agent_timeout=arguments.agent_timeout,
         accept_timeout=arguments.accept_timeout,
+        export_share=arguments.export_share,
     )
     emit(evidence, arguments.output)
     return next(
@@ -122,12 +128,20 @@ def command_command(arguments: argparse.Namespace) -> int:
     )
 
 
+def add_target_options(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--experimental-eu", action="store_true",
+        help="opt in to exact UE55TU7092UXXH EU build; root is unproven",
+    )
+
+
 def add_live_options(command: argparse.ArgumentParser) -> None:
+    add_target_options(command)
     command.add_argument("host", help="TV IPv4 address")
     command.add_argument(
         "--confirm",
         required=True,
-        help=f"exact firmware confirmation phrase ({CONFIRMATION})",
+        help=f"exact firmware confirmation phrase ({CONFIRMATION}; EU: {EU_CONFIRMATION})",
     )
     command.add_argument(
         "--accept-saved-profile",
@@ -168,6 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
         "preflight",
         help="read-only exact-target and artifact assessment",
     )
+    add_target_options(preflight)
     preflight.add_argument("host", help="TV IPv4 address")
     preflight.add_argument("--sdb-timeout", type=float, default=30.0)
     preflight.set_defaults(handler=command_preflight)
@@ -183,6 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
         "inventory",
         help="read-only discovery for a persistent SSH service",
     )
+    add_target_options(inventory)
     inventory.add_argument("host", help="TV IPv4 address")
     inventory.add_argument("--sdb-timeout", type=float, default=30.0)
     inventory.set_defaults(handler=command_inventory)
@@ -207,6 +223,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="root shell command to run; repeat for multiple commands",
     )
     command.add_argument("--agent-timeout", type=float, default=30.0)
+    command.add_argument(
+        "--export-share",
+        type=Path,
+        help="copy files written to the temporary CIFS share to this directory",
+    )
     command.set_defaults(handler=command_command)
     return parser
 

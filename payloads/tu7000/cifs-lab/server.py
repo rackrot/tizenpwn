@@ -16,6 +16,7 @@ SHARE_ROOT = "/srv/cifs-lab-share"
 username = (SECRET_DIR / "username").read_text(encoding="utf-8")
 password = (SECRET_DIR / "password").read_text(encoding="utf-8")
 share = (SECRET_DIR / "share").read_text(encoding="ascii")
+share_writable = (SECRET_DIR / "share_writable").exists()
 
 if username != "owner":
     raise SystemExit("invalid fixed lab username")
@@ -34,7 +35,12 @@ if not (
 
 logger.init(True, False)
 server = smbserver.SimpleSMBServer(listenAddress="0.0.0.0", listenPort=445)
-server.addShare(share, SHARE_ROOT, "Disposable CIFS validation share", readOnly="yes")
+server.addShare(
+    share,
+    SHARE_ROOT,
+    "Disposable CIFS validation share",
+    readOnly="no" if share_writable else "yes",
+)
 server.setSMB2Support(True)
 server.setSMBChallenge("")
 server.addCredential(username, 0, compute_lmhash(password), compute_nthash(password))

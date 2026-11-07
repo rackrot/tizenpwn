@@ -313,3 +313,87 @@ def test_cifs_lab_accepts_an_agent_identity() -> None:
     )
 
     assert lab.identity.password == identity.password
+
+
+def eu_client(*, build=tu7000.EU_BUILD, hashes=None, **changes):
+    output = probe_output(
+        build=build, hashes=ARTIFACT_HASHES if hashes is None else hashes
+    )
+    for old, new in changes.items():
+        output = output.replace(old, new)
+    return FakeClient(model=tu7000.EU_MODEL, output=output)
+
+
+def test_eu_requires_explicit_opt_in():
+    with pytest.raises(CifsRouteError, match="expected UN65TU7000FXZA"):
+        assess_target("192.0.2.10", client=eu_client())
+
+
+def test_eu_assessment_does_not_claim_validated_root_or_tested_build():
+    result = assess_target(
+        "192.0.2.10", client=eu_client(), experimental_eu=True
+    )
+    assert result.compatibility.status.value == "compatible-untested"
+    assert result.to_dict()["firmware"] == tu7000.EU_FIRMWARE
+    assert result.to_dict()["root_validated_by_preflight"] is False
+    assert result.to_dict()["experimental_eu"] is True
+    assert all(artifact.verified for artifact in result.artifacts)
+    assert tu7000.EU_FIRMWARE in result.render()
+
+
+@pytest.mark.parametrize("build", [tu7000.TESTED_BUILD, "T-KTSU2DEUC-REL-202701010101"])
+@pytest.mark.parametrize("require_tested", [True, False])
+def test_eu_rejects_other_builds_even_without_require_tested(build, require_tested):
+    with pytest.raises(CifsRouteError):
+        assess_target(
+            "192.0.2.10", client=eu_client(build=build),
+            experimental_eu=True, require_tested=require_tested,
+        )
+
+
+@pytest.mark.parametrize("path", ARTIFACT_HASHES)
+@pytest.mark.parametrize("missing", [True, False])
+def test_eu_rejects_missing_or_changed_artifacts(path, missing):
+    hashes = dict(ARTIFACT_HASHES)
+    if missing:
+        del hashes[path]
+    else:
+        hashes[path] = "0" * 64
+    with pytest.raises(CifsRouteError, match="artifact hashes did not match"):
+        assess_target(
+            "192.0.2.10", client=eu_client(hashes=hashes), experimental_eu=True
+        )
+
+
+@pytest.mark.parametrize("old,new", [
+    ("uid=901", "uid=0"),
+    ("4.1.10", "5.4.0"),
+    ("4.1.10", "4.1.11"),
+    ("armv7l", "aarch64"),
+    ("Tizen5/TV 5.5.0", "Tizen6/TV 6.0.0"),
+    ("PS_AGENT=ready", "PS_AGENT=missing"),
+    ("MOUNT_SMB=ready", "MOUNT_SMB=missing"),
+    ("REMOTEPC=ready", "REMOTEPC=missing"),
+])
+def test_eu_preserves_runtime_checks(old, new):
+    with pytest.raises(CifsRouteError):
+        assess_target(
+            "192.0.2.10", client=eu_client(**{old: new}), experimental_eu=True
+        )
+
+
+def test_eu_option_rejects_us_model():
+    with pytest.raises(CifsRouteError, match="expected UE55TU7092UXXH"):
+        assess_target("192.0.2.10", client=FakeClient(), experimental_eu=True)
+
+
+@pytest.mark.parametrize("execute,extra", [
+    (tu7000.execute_probe, {}),
+    (tu7000.execute_command, {"commands": ("id",)}),
+])
+def test_eu_live_mode_rejects_us_confirmation_before_connection(execute, extra):
+    with pytest.raises(CifsRouteError, match=tu7000.EU_CONFIRMATION):
+        execute(
+            "192.0.2.10", confirm=tu7000.CONFIRMATION,
+            accept_saved_profile=True, experimental_eu=True, **extra,
+        )

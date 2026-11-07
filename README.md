@@ -6,6 +6,11 @@ exact-target route:
 **`UN65TU7000FXZA` / `T-KTSU2AKUC-2743.0` /
 `T-KTSU2AKUC-REL-202607021959`**
 
+An opt-in, experimental EU profile is documented for
+`UE55TU7092UXXH` / `T-KTSU2DEUC-2743.0` /
+`T-KTSU2DEUC-REL-202607022000`. It has not been validated as a root route.
+See [the TU7092 EU notes](docs/UE55TU7092_EU.md).
+
 It uses the SDB package-name foothold for read-only assessment and for a
 two-push UID-0 classifier, then the TV's privileged Remote PC CIFS helper for
 bounded root execution. A disposable Docker RDP/SMB lab on the controller
